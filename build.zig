@@ -22,6 +22,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const zsvg = zsvg_dep.module("zsvg");
+    const sdl_dep = b.dependency("sdl", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const sdl_lib = sdl_dep.artifact("SDL3");
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -93,11 +98,27 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const editor_exe = b.addExecutable(.{
+        .name = "bg_generation_composition_editor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/editor.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "bg_generation_composition", .module = mod },
+                .{ .name = "zsvg", .module = zsvg },
+            },
+        }),
+    });
+    editor_exe.root_module.linkLibrary(sdl_lib);
+
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
     // step). By default the install prefix is `zig-out/` but can be overridden
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
+    b.installArtifact(editor_exe);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
@@ -123,6 +144,15 @@ pub fn build(b: *std.Build) void {
     // command itself, like this: `zig build run -- arg1 arg2 etc`
     if (b.args) |args| {
         run_cmd.addArgs(args);
+    }
+
+    const editor_step = b.step("editor", "Run the SDL pattern editor");
+    const editor_cmd = b.addRunArtifact(editor_exe);
+    editor_step.dependOn(&editor_cmd.step);
+    editor_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        editor_cmd.addArgs(args);
     }
 
     // Creates an executable that will run `test` blocks from the provided module.

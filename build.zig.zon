@@ -36,10 +36,15 @@
             .url = "git+https://github.com/edmBernard/zsvg#142a098f663387e6fe403518220cb7a448f8f949",
             .hash = "zsvg-0.0.1-vs6x3nHLAAB3-M8SyXZJCwbDPfd5aQjIfpPUXcxJqKWI",
         },
+        .sdl = .{
+            .url = "git+https://github.com/castholm/SDL.git#c5ba24c694b5d520cdc1d029d8def398690d6894",
+            .hash = "sdl-0.4.2+3.4.4-SDL--kB3pQHKG_4zWG-pH04ZcZZj_IRF7dwMpxNVGwd6",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "pattern.txt",
         "src",
         "LICENSE",
         "README.md",
