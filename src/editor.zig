@@ -577,9 +577,22 @@ const App = struct {
         }
     }
 
+    fn applyRenderScale(self: *App) void {
+        // Match the renderer's drawing scale to the window's pixel density so
+        // that on Retina/HiDPI displays we draw at native resolution instead of
+        // letting the OS upscale a low-res framebuffer (which makes text and
+        // 1px lines look blurry).
+        const density = c.SDL_GetWindowPixelDensity(self.window);
+        const scale: f32 = if (density > 0.0) density else 1.0;
+        _ = c.SDL_SetRenderScale(self.renderer, scale, scale);
+    }
+
     fn handleEvent(self: *App, event: *c.SDL_Event) void {
         switch (event.type) {
             c.SDL_EVENT_QUIT => self.running = false,
+            c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
+            c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+            => self.applyRenderScale(),
             c.SDL_EVENT_MOUSE_MOTION => self.handleMouseMotion(event.motion.x, event.motion.y),
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => self.handleMouseButtonDown(event.button.button, event.button.x, event.button.y),
             c.SDL_EVENT_MOUSE_BUTTON_UP => self.stopDrag(event.button.button),
@@ -671,7 +684,7 @@ pub fn main(init: std.process.Init) !void {
         "Pattern Editor",
         window_width,
         window_height,
-        c.SDL_WINDOW_RESIZABLE,
+        c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY,
         &window,
         &renderer,
     ));
@@ -689,6 +702,7 @@ pub fn main(init: std.process.Init) !void {
         .renderer = renderer.?,
     };
     defer app.deinit();
+    app.applyRenderScale();
     app.setStatus("loaded {s}", .{pattern_path});
     app.updateWindowTitle();
 
@@ -785,7 +799,7 @@ fn renderSidebar(app: *App) !void {
 
     // Info section content
     {
-        const label_w: f32 = 56.0;
+        const label_w: f32 = 60.0;
         const line_h: f32 = 16.0;
         var info_y = layout.section_info_y + 24.0;
 
