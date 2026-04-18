@@ -24,12 +24,15 @@ pub const Point = struct {
 };
 
 pub const Layout = struct {
-    size: usize,
+    cols: usize,
+    rows: usize,
     square_extent: f32,
     gap_extent: f32,
     pitch: f32,
-    span: f32,
-    offset: f32,
+    span_x: f32,
+    span_y: f32,
+    offset_x: f32,
+    offset_y: f32,
 };
 
 pub const TilePolygon = struct {
@@ -48,22 +51,24 @@ pub const TileTriangles = struct {
 
 pub const Pattern = struct {
     allocator: std.mem.Allocator,
-    size: usize,
+    cols: usize,
+    rows: usize,
     tiles: []u4,
 
-    pub fn init(allocator: std.mem.Allocator, size: usize) !Pattern {
-        if (size == 0) return error.InvalidPatternSize;
-        const tiles = try allocator.alloc(u4, size * size);
+    pub fn init(allocator: std.mem.Allocator, cols: usize, rows: usize) !Pattern {
+        if (cols == 0 or rows == 0) return error.InvalidPatternSize;
+        const tiles = try allocator.alloc(u4, cols * rows);
         @memset(tiles, 0);
         return .{
             .allocator = allocator,
-            .size = size,
+            .cols = cols,
+            .rows = rows,
             .tiles = tiles,
         };
     }
 
     pub fn clone(self: Pattern, allocator: std.mem.Allocator) !Pattern {
-        const copy = try Pattern.init(allocator, self.size);
+        const copy = try Pattern.init(allocator, self.cols, self.rows);
         @memcpy(copy.tiles, self.tiles);
         return copy;
     }
@@ -71,26 +76,28 @@ pub const Pattern = struct {
     pub fn deinit(self: *Pattern) void {
         self.allocator.free(self.tiles);
         self.tiles = &.{};
-        self.size = 0;
+        self.cols = 0;
+        self.rows = 0;
     }
 
     pub fn eql(self: Pattern, other: Pattern) bool {
-        return self.size == other.size and std.mem.eql(u4, self.tiles, other.tiles);
+        return self.cols == other.cols and self.rows == other.rows and std.mem.eql(u4, self.tiles, other.tiles);
     }
 
     pub fn get(self: Pattern, row: usize, col: usize) u4 {
-        return self.tiles[(row * self.size) + col];
+        return self.tiles[(row * self.cols) + col];
     }
 
     pub fn set(self: *Pattern, row: usize, col: usize, value: u4) void {
-        self.tiles[(row * self.size) + col] = value;
+        self.tiles[(row * self.cols) + col] = value;
     }
 
-    pub fn resized(self: Pattern, allocator: std.mem.Allocator, new_size: usize) !Pattern {
-        var resized_pattern = try Pattern.init(allocator, new_size);
-        const overlap = @min(self.size, new_size);
-        for (0..overlap) |row| {
-            for (0..overlap) |col| {
+    pub fn resized(self: Pattern, allocator: std.mem.Allocator, new_cols: usize, new_rows: usize) !Pattern {
+        var resized_pattern = try Pattern.init(allocator, new_cols, new_rows);
+        const overlap_cols = @min(self.cols, new_cols);
+        const overlap_rows = @min(self.rows, new_rows);
+        for (0..overlap_rows) |row| {
+            for (0..overlap_cols) |col| {
                 resized_pattern.set(row, col, self.get(row, col));
             }
         }
@@ -124,16 +131,12 @@ const default_pattern_text =
     \\0 0 0 0 0 0 0 8 0 0 0 0 0 0 0
 ;
 
-pub fn loadPattern(allocator: std.mem.Allocator, path: []const u8) !Pattern {
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    return loadPatternWithIo(allocator, threaded.io(), path);
+pub fn loadPattern(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Pattern {
+    return loadPatternWithIo(allocator, io, path);
 }
 
-pub fn savePattern(pattern: Pattern, path: []const u8) !void {
-    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
-    defer threaded.deinit();
-    return savePatternWithIo(std.heap.smp_allocator, threaded.io(), pattern, path);
+pub fn savePattern(allocator: std.mem.Allocator, io: std.Io, pattern: Pattern, path: []const u8) !void {
+    return savePatternWithIo(allocator, io, pattern, path);
 }
 
 pub fn buildGridDocumentFromPattern(allocator: std.mem.Allocator, pattern: Pattern) !zsvg.Document {
@@ -147,9 +150,9 @@ pub fn buildGridDocumentFromPattern(allocator: std.mem.Allocator, pattern: Patte
 
     const fill = zsvg.Fill.solidHex(square_hex);
 
-    for (0..pattern.size) |row| {
-        for (0..pattern.size) |col| {
-            const polygon = tilePolygonForCell(row, col, pattern.size, pattern.get(row, col));
+    for (0..pattern.rows) |row| {
+        for (0..pattern.cols) |col| {
+            const polygon = tilePolygonForCell(row, col, pattern.cols, pattern.rows, pattern.get(row, col));
             try addPolygonToDocument(&doc, polygon, fill);
         }
     }
@@ -168,8 +171,8 @@ pub fn saveGridSvgFromPattern(
     try doc.save(allocator, io, path);
 }
 
-pub fn writeGridSvg(allocator: std.mem.Allocator, writer: *Io.Writer) !void {
-    var pattern = try loadPattern(allocator, default_pattern_path);
+pub fn writeGridSvg(allocator: std.mem.Allocator, io: std.Io, writer: *Io.Writer) !void {
+    var pattern = try loadPattern(allocator, io, default_pattern_path);
     defer pattern.deinit();
 
     var doc = try buildGridDocumentFromPattern(allocator, pattern);
@@ -183,31 +186,38 @@ pub fn saveGridSvg(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !
     try saveGridSvgFromPattern(allocator, io, pattern, path);
 }
 
-pub fn gridLayout(size: usize) Layout {
-    std.debug.assert(size > 0);
+pub fn gridLayout(cols: usize, rows: usize) Layout {
+    std.debug.assert(cols > 0 and rows > 0);
 
     const span_target: f32 = @floatFromInt(target_grid_span);
-    const denominator = @as(f32, @floatFromInt((size * 3) - 1));
+    const max_dim = @max(cols, rows);
+    const denominator = @as(f32, @floatFromInt((max_dim * 3) - 1));
     const gap_extent = span_target / denominator;
     const square_extent = gap_extent * 2.0;
-    const span = (square_extent * @as(f32, @floatFromInt(size))) +
-        (gap_extent * @as(f32, @floatFromInt(size - 1)));
-    const offset = (@as(f32, @floatFromInt(canvas_size)) - span) / 2.0;
+    const span_x = (square_extent * @as(f32, @floatFromInt(cols))) +
+        (gap_extent * @as(f32, @floatFromInt(cols - 1)));
+    const span_y = (square_extent * @as(f32, @floatFromInt(rows))) +
+        (gap_extent * @as(f32, @floatFromInt(rows - 1)));
+    const offset_x = (@as(f32, @floatFromInt(canvas_size)) - span_x) / 2.0;
+    const offset_y = (@as(f32, @floatFromInt(canvas_size)) - span_y) / 2.0;
 
     return .{
-        .size = size,
+        .cols = cols,
+        .rows = rows,
         .square_extent = square_extent,
         .gap_extent = gap_extent,
         .pitch = square_extent + gap_extent,
-        .span = span,
-        .offset = offset,
+        .span_x = span_x,
+        .span_y = span_y,
+        .offset_x = offset_x,
+        .offset_y = offset_y,
     };
 }
 
-pub fn tilePolygonForCell(row: usize, col: usize, size: usize, tile: u4) TilePolygon {
-    const layout = gridLayout(size);
-    const x = layout.offset + (@as(f32, @floatFromInt(col)) * layout.pitch);
-    const y = layout.offset + (@as(f32, @floatFromInt(row)) * layout.pitch);
+pub fn tilePolygonForCell(row: usize, col: usize, cols: usize, rows: usize, tile: u4) TilePolygon {
+    const layout = gridLayout(cols, rows);
+    const x = layout.offset_x + (@as(f32, @floatFromInt(col)) * layout.pitch);
+    const y = layout.offset_y + (@as(f32, @floatFromInt(row)) * layout.pitch);
     return tilePolygon(tile, x, y, layout.square_extent);
 }
 
@@ -316,10 +326,10 @@ pub fn tilePolygon(tile: u4, x: f32, y: f32, extent: f32) TilePolygon {
     };
 }
 
-pub fn tileTrianglesForCell(row: usize, col: usize, size: usize, tile: u4) TileTriangles {
-    const layout = gridLayout(size);
-    const x = layout.offset + (@as(f32, @floatFromInt(col)) * layout.pitch);
-    const y = layout.offset + (@as(f32, @floatFromInt(row)) * layout.pitch);
+pub fn tileTrianglesForCell(row: usize, col: usize, cols: usize, rows: usize, tile: u4) TileTriangles {
+    const layout = gridLayout(cols, rows);
+    const x = layout.offset_x + (@as(f32, @floatFromInt(col)) * layout.pitch);
+    const y = layout.offset_y + (@as(f32, @floatFromInt(row)) * layout.pitch);
     return tileTriangles(tile, x, y, layout.square_extent);
 }
 
@@ -468,15 +478,23 @@ fn parsePatternText(allocator: std.mem.Allocator, text: []const u8) !Pattern {
     var line_iter = std.mem.splitScalar(u8, trimmed, '\n');
     const first_line = line_iter.next() orelse return error.InvalidPatternRowCount;
 
-    var declared_size: usize = legacy_grid_size;
+    var declared_cols: usize = legacy_grid_size;
+    var declared_rows: usize = legacy_grid_size;
     var first_row: ?[]const u8 = first_line;
     if (std.mem.startsWith(u8, first_line, "size=")) {
-        declared_size = std.fmt.parseInt(usize, first_line["size=".len..], 10) catch return error.InvalidPatternSize;
-        if (declared_size == 0) return error.InvalidPatternSize;
+        const value = first_line["size=".len..];
+        if (std.mem.findScalar(u8, value, 'x')) |sep| {
+            declared_cols = std.fmt.parseInt(usize, value[0..sep], 10) catch return error.InvalidPatternSize;
+            declared_rows = std.fmt.parseInt(usize, value[sep + 1 ..], 10) catch return error.InvalidPatternSize;
+        } else {
+            declared_cols = std.fmt.parseInt(usize, value, 10) catch return error.InvalidPatternSize;
+            declared_rows = declared_cols;
+        }
+        if (declared_cols == 0 or declared_rows == 0) return error.InvalidPatternSize;
         first_row = null;
     }
 
-    var pattern = try Pattern.init(allocator, declared_size);
+    var pattern = try Pattern.init(allocator, declared_cols, declared_rows);
     errdefer pattern.deinit();
 
     var row: usize = 0;
@@ -486,47 +504,47 @@ fn parsePatternText(allocator: std.mem.Allocator, text: []const u8) !Pattern {
     }
 
     while (line_iter.next()) |line| {
-        if (row >= pattern.size) return error.InvalidPatternRowCount;
+        if (row >= pattern.rows) return error.InvalidPatternRowCount;
         try parsePatternRow(&pattern, row, line);
         row += 1;
     }
 
-    if (row != pattern.size) return error.InvalidPatternRowCount;
+    if (row != pattern.rows) return error.InvalidPatternRowCount;
     return pattern;
 }
 
 fn parsePatternRow(pattern: *Pattern, row: usize, line: []const u8) !void {
-    if (line.len != expectedPatternLineLen(pattern.size)) return error.InvalidPatternColumnCount;
+    if (line.len != expectedPatternLineLen(pattern.cols)) return error.InvalidPatternColumnCount;
 
-    for (0..pattern.size) |col| {
+    for (0..pattern.cols) |col| {
         const char_index = col * 2;
         const digit = line[char_index];
         if (digit < '0' or digit > '8') return error.InvalidPatternDigit;
         pattern.set(row, col, @intCast(digit - '0'));
 
-        if (col + 1 < pattern.size and line[char_index + 1] != ' ') {
+        if (col + 1 < pattern.cols and line[char_index + 1] != ' ') {
             return error.InvalidPatternSeparator;
         }
     }
 }
 
 fn serializePattern(allocator: std.mem.Allocator, pattern: Pattern) ![]u8 {
-    const header = try std.fmt.allocPrint(allocator, "size={d}\n", .{pattern.size});
+    const header = try std.fmt.allocPrint(allocator, "size={d}x{d}\n", .{ pattern.cols, pattern.rows });
     defer allocator.free(header);
 
-    const line_len = expectedPatternLineLen(pattern.size);
-    const body_len = pattern.size * (line_len + 1);
+    const line_len = expectedPatternLineLen(pattern.cols);
+    const body_len = pattern.rows * (line_len + 1);
     const output = try allocator.alloc(u8, header.len + body_len);
 
     @memcpy(output[0..header.len], header);
 
     var index = header.len;
-    for (0..pattern.size) |row| {
-        for (0..pattern.size) |col| {
+    for (0..pattern.rows) |row| {
+        for (0..pattern.cols) |col| {
             output[index] = @as(u8, '0') + pattern.get(row, col);
             index += 1;
 
-            if (col + 1 < pattern.size) {
+            if (col + 1 < pattern.cols) {
                 output[index] = ' ';
                 index += 1;
             }
@@ -543,7 +561,7 @@ fn expectedPatternLineLen(size: usize) usize {
 }
 
 fn legacyPattern(allocator: std.mem.Allocator) !Pattern {
-    const pattern = try Pattern.init(allocator, legacy_grid_size);
+    const pattern = try Pattern.init(allocator, legacy_grid_size, legacy_grid_size);
     const legacy_tiles = [_]u4{
         0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 5, 0, 6, 0, 0, 0, 0, 0, 0,
@@ -566,28 +584,47 @@ fn legacyPattern(allocator: std.mem.Allocator) !Pattern {
 }
 
 test "grid geometry stays centered for legacy layout" {
-    const layout = gridLayout(legacy_grid_size);
-    try std.testing.expectApproxEqAbs(@as(f32, 1760.0), layout.span, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f32, 120.0), layout.offset, 0.01);
+    const layout = gridLayout(legacy_grid_size, legacy_grid_size);
+    try std.testing.expectApproxEqAbs(@as(f32, 1760.0), layout.span_x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 1760.0), layout.span_y, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 120.0), layout.offset_x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 120.0), layout.offset_y, 0.01);
 }
 
 test "grid geometry stays centered for multiple sizes" {
     for ([_]usize{ 10, 15, 20 }) |size| {
-        const layout = gridLayout(size);
-        try std.testing.expectApproxEqAbs(@as(f32, 1760.0), layout.span, 0.05);
+        const layout = gridLayout(size, size);
+        try std.testing.expectApproxEqAbs(@as(f32, 1760.0), layout.span_x, 0.05);
         try std.testing.expectApproxEqAbs(
-            (@as(f32, @floatFromInt(canvas_size)) - layout.span) / 2.0,
-            layout.offset,
+            (@as(f32, @floatFromInt(canvas_size)) - layout.span_x) / 2.0,
+            layout.offset_x,
             0.05,
         );
     }
+}
+
+test "grid geometry centers non-square layouts" {
+    const layout = gridLayout(10, 20);
+    try std.testing.expectApproxEqAbs(@as(f32, 1760.0), layout.span_y, 0.05);
+    try std.testing.expect(layout.span_x < layout.span_y);
+    try std.testing.expectApproxEqAbs(
+        (@as(f32, @floatFromInt(canvas_size)) - layout.span_x) / 2.0,
+        layout.offset_x,
+        0.05,
+    );
+    try std.testing.expectApproxEqAbs(
+        (@as(f32, @floatFromInt(canvas_size)) - layout.span_y) / 2.0,
+        layout.offset_y,
+        0.05,
+    );
 }
 
 test "pattern text parses expected tile values" {
     var pattern = try parsePatternText(std.testing.allocator, default_pattern_text);
     defer pattern.deinit();
 
-    try std.testing.expectEqual(@as(usize, legacy_grid_size), pattern.size);
+    try std.testing.expectEqual(@as(usize, legacy_grid_size), pattern.cols);
+    try std.testing.expectEqual(@as(usize, legacy_grid_size), pattern.rows);
     try std.testing.expectEqual(@as(u4, 2), pattern.get(0, 7));
     try std.testing.expectEqual(@as(u4, 5), pattern.get(3, 4));
     try std.testing.expectEqual(@as(u4, 8), pattern.get(14, 7));
@@ -603,8 +640,24 @@ test "pattern parser reads explicit size headers" {
     var pattern = try parsePatternText(std.testing.allocator, text);
     defer pattern.deinit();
 
-    try std.testing.expectEqual(@as(usize, 3), pattern.size);
+    try std.testing.expectEqual(@as(usize, 3), pattern.cols);
+    try std.testing.expectEqual(@as(usize, 3), pattern.rows);
     try std.testing.expectEqual(@as(u4, 4), pattern.get(1, 1));
+}
+
+test "pattern parser reads non-square size headers" {
+    const text =
+        \\size=4x2
+        \\0 1 2 3
+        \\4 5 6 7
+    ;
+    var pattern = try parsePatternText(std.testing.allocator, text);
+    defer pattern.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), pattern.cols);
+    try std.testing.expectEqual(@as(usize, 2), pattern.rows);
+    try std.testing.expectEqual(@as(u4, 3), pattern.get(0, 3));
+    try std.testing.expectEqual(@as(u4, 6), pattern.get(1, 2));
 }
 
 test "pattern parser rejects invalid size header" {
@@ -701,7 +754,7 @@ test "pattern resizing keeps top-left cells and fills new cells with zero" {
     var pattern = try parsePatternText(std.testing.allocator, text);
     defer pattern.deinit();
 
-    var grown = try pattern.resized(std.testing.allocator, 4);
+    var grown = try pattern.resized(std.testing.allocator, 4, 4);
     defer grown.deinit();
 
     try std.testing.expectEqual(@as(u4, 1), grown.get(0, 0));
@@ -719,12 +772,33 @@ test "pattern resizing crops from the bottom-right when shrinking" {
     var pattern = try parsePatternText(std.testing.allocator, text);
     defer pattern.deinit();
 
-    var shrunk = try pattern.resized(std.testing.allocator, 2);
+    var shrunk = try pattern.resized(std.testing.allocator, 2, 2);
     defer shrunk.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), shrunk.size);
+    try std.testing.expectEqual(@as(usize, 2), shrunk.cols);
+    try std.testing.expectEqual(@as(usize, 2), shrunk.rows);
     try std.testing.expectEqual(@as(u4, 1), shrunk.get(0, 0));
     try std.testing.expectEqual(@as(u4, 5), shrunk.get(1, 1));
+}
+
+test "pattern resizing supports independent dimensions" {
+    const text =
+        \\size=3
+        \\1 2 3
+        \\4 5 6
+        \\7 8 0
+    ;
+    var pattern = try parsePatternText(std.testing.allocator, text);
+    defer pattern.deinit();
+
+    var widened = try pattern.resized(std.testing.allocator, 5, 2);
+    defer widened.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), widened.cols);
+    try std.testing.expectEqual(@as(usize, 2), widened.rows);
+    try std.testing.expectEqual(@as(u4, 1), widened.get(0, 0));
+    try std.testing.expectEqual(@as(u4, 6), widened.get(1, 2));
+    try std.testing.expectEqual(@as(u4, 0), widened.get(1, 4));
 }
 
 test "grid document contains 225 black shapes" {
@@ -739,13 +813,13 @@ test "grid document contains 225 black shapes" {
 
     var path_count: usize = 0;
     var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, svg, search_from, "<path")) |index| {
+    while (std.mem.findPos(u8, svg, search_from, "<path")) |index| {
         path_count += 1;
         search_from = index + 1;
     }
 
     try std.testing.expectEqual(@as(usize, legacy_grid_size * legacy_grid_size), path_count);
-    try std.testing.expect(std.mem.indexOf(u8, svg, "fill='rgb(245,240,230)'") != null);
+    try std.testing.expect(std.mem.find(u8, svg, "fill='rgb(245,240,230)'") != null);
 }
 
 test "default pattern matches the legacy composition svg" {

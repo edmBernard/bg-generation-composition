@@ -62,8 +62,10 @@ const Rect = struct {
 };
 
 const ButtonId = enum {
-    grid_minus,
-    grid_plus,
+    width_minus,
+    width_plus,
+    height_minus,
+    height_plus,
     zoom_minus,
     zoom_plus,
     fit,
@@ -90,9 +92,12 @@ const SidebarLayout = struct {
     section_actions_y: f32,
     section_info_y: f32,
     section_help_y: f32,
-    grid_value_rect: Rect,
+    width_label_rect: Rect,
+    width_value_rect: Rect,
+    height_label_rect: Rect,
+    height_value_rect: Rect,
     zoom_value_rect: Rect,
-    buttons: [9]Button,
+    buttons: [11]Button,
 };
 
 const App = struct {
@@ -132,10 +137,11 @@ const App = struct {
 
     fn updateWindowTitle(self: *App) void {
         var buffer: [128]u8 = undefined;
-        const title = std.fmt.bufPrintZ(
+        const title = std.fmt.bufPrintSentinel(
             &buffer,
             "Pattern Editor{s} - {s}",
             .{ if (self.dirty) " *" else "", self.pattern_path },
+            0,
         ) catch return;
         _ = c.SDL_SetWindowTitle(self.window, title.ptr);
     }
@@ -150,7 +156,7 @@ const App = struct {
     }
 
     fn save(self: *App) void {
-        bg.savePattern(self.pattern, self.pattern_path) catch |err| {
+        bg.savePattern(self.allocator, self.io, self.pattern, self.pattern_path) catch |err| {
             self.setStatus("save failed: {s}", .{@errorName(err)});
             return;
         };
@@ -173,7 +179,7 @@ const App = struct {
     }
 
     fn reload(self: *App) void {
-        var pattern = bg.loadPattern(self.allocator, self.pattern_path) catch |err| {
+        var pattern = bg.loadPattern(self.allocator, self.io, self.pattern_path) catch |err| {
             self.setStatus("reload failed: {s}", .{@errorName(err)});
             return;
         };
@@ -276,23 +282,23 @@ const App = struct {
             return;
         };
 
-        const layout = bg.gridLayout(self.pattern.size);
-        if (canvas_point.x < layout.offset or canvas_point.y < layout.offset) {
+        const layout = bg.gridLayout(self.pattern.cols, self.pattern.rows);
+        if (canvas_point.x < layout.offset_x or canvas_point.y < layout.offset_y) {
             self.hovered_cell = null;
             return;
         }
 
-        const col_float = (canvas_point.x - layout.offset) / layout.pitch;
-        const row_float = (canvas_point.y - layout.offset) / layout.pitch;
+        const col_float = (canvas_point.x - layout.offset_x) / layout.pitch;
+        const row_float = (canvas_point.y - layout.offset_y) / layout.pitch;
         const col = @as(usize, @intFromFloat(@floor(col_float)));
         const row = @as(usize, @intFromFloat(@floor(row_float)));
-        if (row >= self.pattern.size or col >= self.pattern.size) {
+        if (row >= self.pattern.rows or col >= self.pattern.cols) {
             self.hovered_cell = null;
             return;
         }
 
-        const inner_x = (canvas_point.x - layout.offset) - (@as(f32, @floatFromInt(col)) * layout.pitch);
-        const inner_y = (canvas_point.y - layout.offset) - (@as(f32, @floatFromInt(row)) * layout.pitch);
+        const inner_x = (canvas_point.x - layout.offset_x) - (@as(f32, @floatFromInt(col)) * layout.pitch);
+        const inner_y = (canvas_point.y - layout.offset_y) - (@as(f32, @floatFromInt(row)) * layout.pitch);
         if (inner_x > layout.square_extent or inner_y > layout.square_extent) {
             self.hovered_cell = null;
             return;
@@ -345,11 +351,12 @@ const App = struct {
         self.setStatus("zoom {d:.0}%", .{self.zoom * 100.0});
     }
 
-    fn resizePattern(self: *App, new_size: usize) void {
-        const clamped_size = std.math.clamp(new_size, min_grid_size, max_grid_size);
-        if (clamped_size == self.pattern.size) return;
+    fn resizePattern(self: *App, new_cols: usize, new_rows: usize) void {
+        const clamped_cols = std.math.clamp(new_cols, min_grid_size, max_grid_size);
+        const clamped_rows = std.math.clamp(new_rows, min_grid_size, max_grid_size);
+        if (clamped_cols == self.pattern.cols and clamped_rows == self.pattern.rows) return;
 
-        const resized = self.pattern.resized(self.allocator, clamped_size) catch |err| {
+        const resized = self.pattern.resized(self.allocator, clamped_cols, clamped_rows) catch |err| {
             self.setStatus("resize failed: {s}", .{@errorName(err)});
             return;
         };
@@ -359,7 +366,7 @@ const App = struct {
         self.hovered_cell = null;
         self.fitView();
         self.refreshDirty();
-        self.setStatus("grid size -> {d}", .{clamped_size});
+        self.setStatus("grid -> {d} x {d}", .{ clamped_cols, clamped_rows });
     }
 
     fn startDrag(self: *App, button: u8, x: f32, y: f32) void {
@@ -391,21 +398,56 @@ const App = struct {
         // Grid section
         const section_grid_y = y;
         y += header_h;
-        const grid_row_y = y;
-        const grid_minus = Button{
-            .id = .grid_minus,
-            .rect = .{ .x = inner_x, .y = grid_row_y, .w = btn_size, .h = btn_size },
+
+        const label_w: f32 = 18.0;
+        const value_w: f32 = inner_w - label_w - btn_size * 2.0;
+
+        const width_row_y = y;
+        const width_label_rect = Rect{
+            .x = inner_x,
+            .y = width_row_y,
+            .w = label_w,
+            .h = btn_size,
+        };
+        const width_minus = Button{
+            .id = .width_minus,
+            .rect = .{ .x = inner_x + label_w, .y = width_row_y, .w = btn_size, .h = btn_size },
             .label = "-",
         };
-        const grid_plus = Button{
-            .id = .grid_plus,
-            .rect = .{ .x = inner_x + inner_w - btn_size, .y = grid_row_y, .w = btn_size, .h = btn_size },
+        const width_plus = Button{
+            .id = .width_plus,
+            .rect = .{ .x = inner_x + inner_w - btn_size, .y = width_row_y, .w = btn_size, .h = btn_size },
             .label = "+",
         };
-        const grid_value_rect = Rect{
-            .x = grid_minus.rect.x + grid_minus.rect.w,
-            .y = grid_row_y,
-            .w = inner_w - btn_size * 2.0,
+        const width_value_rect = Rect{
+            .x = width_minus.rect.x + width_minus.rect.w,
+            .y = width_row_y,
+            .w = value_w,
+            .h = btn_size,
+        };
+        y += row_h;
+
+        const height_row_y = y;
+        const height_label_rect = Rect{
+            .x = inner_x,
+            .y = height_row_y,
+            .w = label_w,
+            .h = btn_size,
+        };
+        const height_minus = Button{
+            .id = .height_minus,
+            .rect = .{ .x = inner_x + label_w, .y = height_row_y, .w = btn_size, .h = btn_size },
+            .label = "-",
+        };
+        const height_plus = Button{
+            .id = .height_plus,
+            .rect = .{ .x = inner_x + inner_w - btn_size, .y = height_row_y, .w = btn_size, .h = btn_size },
+            .label = "+",
+        };
+        const height_value_rect = Rect{
+            .x = height_minus.rect.x + height_minus.rect.w,
+            .y = height_row_y,
+            .w = value_w,
             .h = btn_size,
         };
         y += row_h + section_gap;
@@ -482,13 +524,17 @@ const App = struct {
             .section_actions_y = section_actions_y,
             .section_info_y = section_info_y,
             .section_help_y = section_help_y,
-            .grid_value_rect = grid_value_rect,
+            .width_label_rect = width_label_rect,
+            .width_value_rect = width_value_rect,
+            .height_label_rect = height_label_rect,
+            .height_value_rect = height_value_rect,
             .zoom_value_rect = zoom_value_rect,
             .buttons = .{
-                grid_minus, grid_plus,
-                zoom_minus, zoom_plus,
-                fit,        reset,
-                save_btn,   export_btn,
+                width_minus,  width_plus,
+                height_minus, height_plus,
+                zoom_minus,   zoom_plus,
+                fit,          reset,
+                save_btn,     export_btn,
                 reload_btn,
             },
         };
@@ -504,8 +550,10 @@ const App = struct {
 
     fn triggerButton(self: *App, button_id: ButtonId) void {
         switch (button_id) {
-            .grid_minus => self.resizePattern(self.pattern.size -| 1),
-            .grid_plus => self.resizePattern(self.pattern.size + 1),
+            .width_minus => self.resizePattern(self.pattern.cols -| 1, self.pattern.rows),
+            .width_plus => self.resizePattern(self.pattern.cols + 1, self.pattern.rows),
+            .height_minus => self.resizePattern(self.pattern.cols, self.pattern.rows -| 1),
+            .height_plus => self.resizePattern(self.pattern.cols, self.pattern.rows + 1),
             .zoom_minus => self.zoomByFactor(1.0 / 1.2, self.previewRect().centerX(), self.previewRect().centerY()),
             .zoom_plus => self.zoomByFactor(1.2, self.previewRect().centerX(), self.previewRect().centerY()),
             .fit => {
@@ -643,8 +691,8 @@ const App = struct {
         };
         try sdlBool(c.SDL_SetRenderClipRect(self.renderer, &clip));
 
-        for (0..self.pattern.size) |row| {
-            for (0..self.pattern.size) |col| {
+        for (0..self.pattern.rows) |row| {
+            for (0..self.pattern.cols) |col| {
                 try renderTile(self, preview, row, col, self.pattern.get(row, col));
             }
         }
@@ -665,13 +713,14 @@ const App = struct {
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
+    const gpa = init.gpa;
     const args = try init.minimal.args.toSlice(arena);
     const pattern_path = if (args.len >= 2) args[1] else bg.default_pattern_path;
     const export_path = if (args.len >= 3) args[2] else bg.default_export_path;
 
-    var pattern = try bg.loadPattern(std.heap.smp_allocator, pattern_path);
+    var pattern = try bg.loadPattern(gpa, io, pattern_path);
     errdefer pattern.deinit();
-    var saved_pattern = try pattern.clone(std.heap.smp_allocator);
+    var saved_pattern = try pattern.clone(gpa);
     errdefer saved_pattern.deinit();
 
     try sdlBool(c.SDL_SetAppMetadata("bg_generation_composition_editor", "0.0.1", "com.edmBernard.bg-generation-composition"));
@@ -692,7 +741,7 @@ pub fn main(init: std.process.Init) !void {
     defer c.SDL_DestroyWindow(window.?);
 
     var app = App{
-        .allocator = std.heap.smp_allocator,
+        .allocator = gpa,
         .io = io,
         .pattern_path = pattern_path,
         .export_path = export_path,
@@ -722,7 +771,7 @@ pub fn main(init: std.process.Init) !void {
 // ---------------------------------------------------------------------------
 
 fn renderTile(app: *App, preview: Rect, row: usize, col: usize, tile: u4) !void {
-    const triangles = bg.tileTrianglesForCell(row, col, app.pattern.size, tile);
+    const triangles = bg.tileTrianglesForCell(row, col, app.pattern.cols, app.pattern.rows, tile);
     for (0..triangles.len) |triangle_index| {
         try renderTriangle(app, preview, triangles.triangles[triangle_index]);
     }
@@ -742,10 +791,10 @@ fn renderTriangle(app: *App, preview: Rect, triangle: bg.Triangle) !void {
 }
 
 fn renderHoveredCell(app: *App, preview: Rect, row: usize, col: usize) !void {
-    const polygon = bg.tilePolygonForCell(row, col, app.pattern.size, 0);
+    const polygon = bg.tilePolygonForCell(row, col, app.pattern.cols, app.pattern.rows, 0);
     const top_left = app.canvasToScreen(preview, polygon.points[0]);
     const scale = app.viewScale(preview);
-    const layout = bg.gridLayout(app.pattern.size);
+    const layout = bg.gridLayout(app.pattern.cols, app.pattern.rows);
     const rect = c.SDL_FRect{
         .x = top_left.x,
         .y = top_left.y,
@@ -779,6 +828,10 @@ fn renderSidebar(app: *App) !void {
     try renderSectionHeader(app.renderer, inner_x, layout.section_info_y, inner_w, "INFO");
     try renderSectionHeader(app.renderer, inner_x, layout.section_help_y, inner_w, "SHORTCUTS");
 
+    // Width / height row labels
+    try drawCenteredText(app.renderer, layout.width_label_rect, "W", col_text_dim);
+    try drawCenteredText(app.renderer, layout.height_label_rect, "H", col_text_dim);
+
     // Buttons
     for (layout.buttons) |button| {
         const active = hovered_button != null and hovered_button.? == button.id;
@@ -788,12 +841,17 @@ fn renderSidebar(app: *App) !void {
     // Inline value pills between -/+ buttons
     {
         var buf: [32]u8 = undefined;
-        const text = try std.fmt.bufPrintZ(&buf, "{d} x {d}", .{ app.pattern.size, app.pattern.size });
-        try renderValuePill(app.renderer, layout.grid_value_rect, text);
+        const text = try std.fmt.bufPrintSentinel(&buf, "{d}", .{app.pattern.cols}, 0);
+        try renderValuePill(app.renderer, layout.width_value_rect, text);
     }
     {
         var buf: [32]u8 = undefined;
-        const text = try std.fmt.bufPrintZ(&buf, "{d:.0}%", .{app.zoom * 100.0});
+        const text = try std.fmt.bufPrintSentinel(&buf, "{d}", .{app.pattern.rows}, 0);
+        try renderValuePill(app.renderer, layout.height_value_rect, text);
+    }
+    {
+        var buf: [32]u8 = undefined;
+        const text = try std.fmt.bufPrintSentinel(&buf, "{d:.0}%", .{app.zoom * 100.0}, 0);
         try renderValuePill(app.renderer, layout.zoom_value_rect, text);
     }
 
@@ -814,7 +872,7 @@ fn renderSidebar(app: *App) !void {
         try drawText(app.renderer, inner_x, info_y, "Hover", col_text_dim);
         if (app.hovered_cell) |h| {
             var hbuf: [64]u8 = undefined;
-            const text = try std.fmt.bufPrintZ(&hbuf, "r {d}, c {d}, tile {d}", .{ h.row, h.col, app.pattern.get(h.row, h.col) });
+            const text = try std.fmt.bufPrintSentinel(&hbuf, "r {d}, c {d}, tile {d}", .{ h.row, h.col, app.pattern.get(h.row, h.col) }, 0);
             try drawText(app.renderer, inner_x + label_w, info_y, std.mem.span(text.ptr), col_text_accent);
         } else {
             try drawText(app.renderer, inner_x + label_w, info_y, "-", col_text_dim);
@@ -899,14 +957,15 @@ fn renderStatusBar(app: *App) !void {
     try drawText(app.renderer, 12.0, text_y, app.status[0..app.status_len], col_text);
 
     var buf: [128]u8 = undefined;
-    const right = try std.fmt.bufPrintZ(
+    const right = try std.fmt.bufPrintSentinel(
         &buf,
         "Grid {d}x{d}   Zoom {d:.0}%   Pan ({d:.0}, {d:.0}){s}",
         .{
-            app.pattern.size, app.pattern.size,
+            app.pattern.cols, app.pattern.rows,
             app.zoom * 100.0, app.pan_x,
             app.pan_y,        if (app.dirty) "   *" else "",
         },
+        0,
     );
     const text_slice = std.mem.span(right.ptr);
     const text_w = @as(f32, @floatFromInt(text_slice.len)) * glyph_w;
