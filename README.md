@@ -8,7 +8,7 @@ The output is a centered black-on-cream composition inspired by Yvaral's "Compos
 
 Running the CLI writes a single SVG file containing the pattern from `pattern.txt`.
 
-Running the editor opens an SDL3 window that previews the composition, lets you click cells to change tile variants, and can save both the pattern file and an exported SVG.
+Running the editor opens an SDL3 window that previews the composition, lets you click cells to change tile variants, resize the grid, zoom and pan the canvas, and save both the pattern file and an exported SVG.
 
 ## Requirements
 
@@ -78,13 +78,32 @@ Run the SDL editor with:
 zig build editor
 ```
 
+Pattern files now save with an explicit size header:
+
+```text
+size=15
+0 0 0 ...
+```
+
+Legacy headerless `15x15` files are still supported when loading.
+
 Editor shortcuts:
 
 - `LMB` / `RMB`: cycle the hovered tile forward or backward
+- `Mouse wheel` or `+` / `-`: zoom
+- `MMB drag` or `Space` + `LMB drag`: pan
+- `0`: fit the pattern to the preview
+- `Arrow keys`: pan the viewport
 - `S`: save `pattern.txt`
 - `E`: export `pattern.svg`
 - `R`: reload `pattern.txt`
 - `Q`: quit
+
+Editor controls:
+
+- HUD `Grid -/+`: shrink or grow the square grid while preserving the top-left content
+- HUD `Zoom -/+`: adjust zoom around the preview center
+- HUD `Fit` / `Reset`: restore a safe viewport if the pattern moves off-screen
 
 ## Notes
 
