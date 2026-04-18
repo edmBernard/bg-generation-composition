@@ -1,0 +1,12 @@
+
+# OS and IDE files
+.DS_Store
+/.vscode
+
+# Zig artifacts
+/zig-out
+/zig-pkg
+.zig-cache
+
+# SVG files
+*.svg
